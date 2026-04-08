@@ -6,192 +6,166 @@ vvsc_heat1d_solver.py — 1D Transient Heat Conduction Solver
 Course:  AOE/CS/ME 6444 — Verification and Validation in Scientific Computing
 Author:  Dawood Wasif
 ===============================================================================
-
-Numerical Method:
-    Spatial:  2nd-order central finite differences   O(Δz²)
-    Temporal: Crank-Nicolson (implicit trapezoidal)  O(Δt²)
-    Linear system: Thomas algorithm (tridiagonal)
-
-Governing PDE:
-    ρ c_p ∂T/∂t = k ∂²T/∂z² + s(z,t)
-
-This module provides a clean, reusable solver that is imported by the MMS
-verification driver.  The solver accepts callable functions for initial
-conditions, boundary conditions, and source terms so it can be used with
-any manufactured solution.
+Provides two solvers:
+  1. solve_heat_1d_CN          -- Dirichlet BCs (verified in HW3 via MMS)
+  2. solve_heat_1d_CN_neumann  -- Neumann at z=0 + Dirichlet at z=L
+                                  (Newton iteration for nonlinear surface BC)
 ===============================================================================
 """
-
 import numpy as np
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Thomas Algorithm (tridiagonal solver)
-# ─────────────────────────────────────────────────────────────────────────────
-def thomas_solve(a: float, b: float, c: float, d: np.ndarray) -> np.ndarray:
-    """
-    Thomas algorithm for tridiagonal systems with constant coefficients.
-
-    Solves  A x = d  where A is tridiagonal with:
-        sub-diagonal  = a  (scalar, constant)
-        main diagonal = b  (scalar, constant)
-        super-diagonal= c  (scalar, constant)
-
-    Parameters
-    ----------
-    a : float — sub-diagonal coefficient
-    b : float — main diagonal coefficient
-    c : float — super-diagonal coefficient
-    d : ndarray, shape (n,) — right-hand side vector
-
-    Returns
-    -------
-    x : ndarray, shape (n,) — solution vector
-    """
+def thomas_solve(a, b, c, d):
+    """Thomas algorithm, constant coefficients."""
     n = len(d)
-    cp = np.zeros(n, dtype=float)
-    dp = np.zeros(n, dtype=float)
-
-    # Forward sweep
-    cp[0] = c / b
-    dp[0] = d[0] / b
+    cp = np.zeros(n, dtype=d.dtype)
+    dp = np.zeros(n, dtype=d.dtype)
+    cp[0] = c / b; dp[0] = d[0] / b
     for i in range(1, n):
         denom = b - a * cp[i - 1]
         cp[i] = (c / denom) if i < n - 1 else 0.0
         dp[i] = (d[i] - a * dp[i - 1]) / denom
-
-    # Back substitution
-    x = np.zeros(n, dtype=float)
+    x = np.zeros(n, dtype=d.dtype)
     x[-1] = dp[-1]
     for i in range(n - 2, -1, -1):
         x[i] = dp[i] - cp[i] * x[i + 1]
-
     return x
 
+def thomas_solve_var(a_sub, b_diag, c_sup, d):
+    """Thomas algorithm, variable coefficients."""
+    n = len(d)
+    cp = np.zeros(n, dtype=d.dtype)
+    dp = np.zeros(n, dtype=d.dtype)
+    cp[0] = c_sup[0] / b_diag[0]; dp[0] = d[0] / b_diag[0]
+    for i in range(1, n):
+        denom = b_diag[i] - a_sub[i] * cp[i - 1]
+        cp[i] = (c_sup[i] / denom) if i < n - 1 else 0.0
+        dp[i] = (d[i] - a_sub[i] * dp[i - 1]) / denom
+    x = np.zeros(n, dtype=d.dtype)
+    x[-1] = dp[-1]
+    for i in range(n - 2, -1, -1):
+        x[i] = dp[i] - cp[i] * x[i + 1]
+    return x
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Crank-Nicolson Solver
-# ─────────────────────────────────────────────────────────────────────────────
+# ── Dirichlet-only solver (HW3, verified via MMS) ───────────────────────
 def solve_heat_1d_CN(
-    Nz: int,
-    Nt: int,
-    L: float,
-    t_final: float,
-    rho: float,
-    cp: float,
-    k: float,
-    T_init_fn,
-    T_left_fn,
-    T_right_fn,
-    source_fn=None,
-    store_history: bool = False,
+    Nz, Nt, L, t_final, rho, cp, k,
+    T_init_fn, T_left_fn, T_right_fn,
+    source_fn=None, store_history=False,
 ):
-    """
-    Solve 1D heat equation with Dirichlet BCs via Crank-Nicolson.
-
-    PDE:  ρ c_p ∂T/∂t = k ∂²T/∂z² + s(z, t)
-
-    Space: 2nd-order central FD on uniform grid (Nz cells, Nz+1 nodes)
-    Time:  Crank-Nicolson with trapezoidal source evaluation (Nt steps)
-    Solve: Thomas algorithm for the tridiagonal system
-
-    Parameters
-    ----------
-    Nz, Nt      : spatial cells and time steps
-    L, t_final  : domain length [m] and final time [s]
-    rho, cp, k  : density, specific heat, thermal conductivity
-    T_init_fn   : callable(z_array) → initial T array
-    T_left_fn   : callable(t_scalar) → left BC value
-    T_right_fn  : callable(t_scalar) → right BC value
-    source_fn   : callable(z_array, t_scalar) → source array (or None)
-    store_history : if True, store the full space-time solution
-
-    Returns
-    -------
-    dict with keys:
-        z, t, dz, dt, Fo, T_final
-        T_history (Nt+1 × Nz+1 array, only if store_history=True)
-    """
     alpha = k / (rho * cp)
-    dz = L / Nz
-    dt = t_final / Nt
-    Fo = alpha * dt / dz**2
-
-    z = np.linspace(0.0, L, Nz + 1)
-    t = np.linspace(0.0, t_final, Nt + 1)
-
-    # Solution vector — initialise from T_init_fn
+    dz = L / Nz; dt = t_final / Nt; Fo = alpha * dt / dz**2
+    z = np.linspace(0.0, L, Nz + 1); t = np.linspace(0.0, t_final, Nt + 1)
     T = np.asarray(T_init_fn(z), dtype=float).copy()
+    T_history = None
+    if store_history:
+        T_history = np.zeros((Nt + 1, Nz + 1)); T_history[0] = T.copy()
+    a_imp = -Fo/2; b_imp = 1+Fo; c_imp = -Fo/2
+    a_exp = Fo/2;  b_exp = 1-Fo; c_exp = Fo/2
+    def esrc(zv, tt):
+        if source_fn is None: return np.zeros_like(zv)
+        return np.asarray(source_fn(zv, tt), dtype=float)
+    for ns in range(Nt):
+        tn=t[ns]; tnp1=t[ns+1]
+        rhs = a_exp*T[0:Nz-1] + b_exp*T[1:Nz] + c_exp*T[2:Nz+1]
+        zi=z[1:Nz]; rhs += (dt/(2*rho*cp))*(esrc(zi,tn)+esrc(zi,tnp1))
+        Tl=float(T_left_fn(tnp1)); Tr=float(T_right_fn(tnp1))
+        rhs[0] -= a_imp*Tl; rhs[-1] -= c_imp*Tr
+        T[1:Nz] = thomas_solve(a_imp, b_imp, c_imp, rhs)
+        T[0]=Tl; T[Nz]=Tr
+        if store_history: T_history[ns+1]=T.copy()
+    result = {"z":z,"t":t,"dz":dz,"dt":dt,"Fo":Fo,"T_final":T.copy()}
+    if store_history: result["T_history"]=T_history
+    return result
+
+# ── Neumann+Dirichlet solver (HW4, Newton iteration) ────────────────────
+def solve_heat_1d_CN_neumann(
+    Nz, Nt, L, t_final, rho, cp, k,
+    T_init_fn, T_right_fn,
+    q_net_fn, dq_net_dTs_fn,
+    newton_tol=1e-12, newton_maxiter=50,
+    store_history=False, dtype=np.float64,
+):
+    FT = dtype
+    alpha = k / (rho * cp)
+    dz = FT(L / Nz); dt = FT(t_final / Nt)
+    Fo = FT(alpha * dt / dz**2)
+    Fo_h = FT(Fo / 2); opFo = FT(1 + Fo); omFo = FT(1 - Fo)
+    cq = FT(Fo * float(dz) / k)
+
+    z = np.linspace(FT(0), FT(L), Nz+1).astype(FT)
+    t_arr = np.linspace(FT(0), FT(t_final), Nt+1).astype(FT)
+    T = np.asarray(T_init_fn(z), dtype=FT).copy()
 
     T_history = None
     if store_history:
-        T_history = np.zeros((Nt + 1, Nz + 1), dtype=float)
-        T_history[0, :] = T.copy()
+        T_history = np.zeros((Nt+1, Nz+1), dtype=FT); T_history[0]=T.copy()
 
-    # Tridiagonal coefficients (constant for uniform grid & properties)
-    # Implicit side (LHS)
-    a_imp = -Fo / 2.0      # sub-diagonal
-    b_imp =  1.0 + Fo       # main diagonal
-    c_imp = -Fo / 2.0      # super-diagonal
-    # Explicit side (RHS)
-    a_exp =  Fo / 2.0
-    b_exp =  1.0 - Fo
-    c_exp =  Fo / 2.0
+    Ts_hist = np.zeros(Nt+1, dtype=FT); Ts_hist[0]=T[0]
+    newton_total = 0
 
-    N_int = Nz - 1   # number of interior unknowns
+    # Pre-allocate Jacobian arrays
+    a_sub  = np.zeros(Nz, dtype=FT)
+    b_diag = np.zeros(Nz, dtype=FT)
+    c_sup  = np.zeros(Nz, dtype=FT)
+    R      = np.zeros(Nz, dtype=FT)
 
-    # Vectorised source evaluation wrapper
-    def eval_source(z_vec, tt):
-        if source_fn is None:
-            return np.zeros_like(z_vec, dtype=float)
-        return np.asarray(source_fn(z_vec, tt), dtype=float)
+    # Interior Jacobian (constant, set once)
+    a_sub[1:] = -Fo_h
+    c_sup[:-1] = -Fo_h
+    c_sup[0] = FT(-Fo)  # surface row super-diagonal
 
-    # ── Time-stepping loop ──────────────────────────────────────────────
-    for n in range(Nt):
-        tn   = t[n]
-        tnp1 = t[n + 1]
+    for ns in range(Nt):
+        tn = float(t_arr[ns]); tnp1 = float(t_arr[ns+1])
+        T_old = T.copy()
+        Tr_new = FT(T_right_fn(tnp1))
 
-        # Build RHS using vectorised slicing (no Python for-loop)
-        T_im1 = T[0:Nz - 1]     # T_{i-1}^n   for i = 1..Nz-1
-        T_i   = T[1:Nz]         # T_i^n
-        T_ip1 = T[2:Nz + 1]     # T_{i+1}^n
+        # ── Explicit RHS (vectorised) ───────────────────────────────────
+        rhs_ex = np.zeros(Nz, dtype=FT)
+        q_n = FT(q_net_fn(float(T_old[0]), tn))
+        rhs_ex[0] = omFo*T_old[0] + Fo*T_old[1] + cq*q_n
+        rhs_ex[1:Nz-1] = Fo_h*T_old[0:Nz-2] + omFo*T_old[1:Nz-1] + Fo_h*T_old[2:Nz]
+        rhs_ex[Nz-1] = Fo_h*T_old[Nz-2] + omFo*T_old[Nz-1] + Fo_h*T_old[Nz] + Fo_h*Tr_new
 
-        rhs = a_exp * T_im1 + b_exp * T_i + c_exp * T_ip1
+        # ── Newton iteration ────────────────────────────────────────────
+        Tg = T_old[:Nz].copy()
 
-        # Source term — Crank-Nicolson trapezoidal average
-        z_int = z[1:Nz]
-        s_n   = eval_source(z_int, tn)
-        s_np1 = eval_source(z_int, tnp1)
-        rhs += (dt / (2.0 * rho * cp)) * (s_n + s_np1)
+        for nit in range(newton_maxiter):
+            # Surface residual
+            Ts_g = float(Tg[0])
+            q_np1 = FT(q_net_fn(Ts_g, tnp1))
+            dq    = FT(dq_net_dTs_fn(Ts_g, tnp1))
+            R[0] = opFo*Tg[0] - Fo*Tg[1] - rhs_ex[0] - cq*q_np1
+            b_diag[0] = opFo - cq*dq
 
-        # Dirichlet BCs at t^{n+1}
-        T_left  = float(T_left_fn(tnp1))
-        T_right = float(T_right_fn(tnp1))
+            # Interior residual (vectorised)
+            R[1:Nz-1] = (-Fo_h*Tg[0:Nz-2] + opFo*Tg[1:Nz-1]
+                         - Fo_h*Tg[2:Nz] - rhs_ex[1:Nz-1])
+            b_diag[1:Nz-1] = opFo
 
-        # Move known BC values to RHS
-        rhs[0]  -= a_imp * T_left
-        rhs[-1] -= c_imp * T_right
+            # Last node
+            R[Nz-1] = -Fo_h*Tg[Nz-2] + opFo*Tg[Nz-1] - rhs_ex[Nz-1]
+            b_diag[Nz-1] = opFo
 
-        # Solve interior tridiagonal system
-        T_int = thomas_solve(a_imp, b_imp, c_imp, rhs)
+            res_norm = float(np.max(np.abs(R)))
+            if res_norm < float(newton_tol):
+                newton_total += (nit + 1)
+                break
 
-        # Assemble full solution vector
-        T[0]    = T_left
-        T[1:Nz] = T_int
-        T[Nz]   = T_right
+            delta = thomas_solve_var(a_sub, b_diag, c_sup, -R)
+            Tg += delta
+        else:
+            newton_total += newton_maxiter
 
-        if store_history:
-            T_history[n + 1, :] = T.copy()
+        T[:Nz] = Tg; T[Nz] = Tr_new
+        Ts_hist[ns+1] = T[0]
+        if store_history: T_history[ns+1] = T.copy()
 
     result = {
-        "z": z,
-        "t": t,
-        "dz": dz,
-        "dt": dt,
-        "Fo": Fo,
-        "T_final": T.copy(),
+        "z": z.astype(np.float64), "t": t_arr.astype(np.float64),
+        "dz": float(dz), "dt": float(dt), "Fo": float(Fo),
+        "T_final": T.astype(np.float64).copy(),
+        "T_surface_history": Ts_hist.astype(np.float64).copy(),
+        "newton_iters_total": newton_total,
     }
-    if store_history:
-        result["T_history"] = T_history
-
+    if store_history: result["T_history"] = T_history.astype(np.float64)
     return result
