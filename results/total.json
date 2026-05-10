@@ -1,0 +1,23 @@
+{
+  "U_NUM": 6.324979591648843,
+  "U_MAVM_plus": 362.4451065562321,
+  "U_MAVM_minus": 151.0837910357541,
+  "median_width_input": 1472.7092342678452,
+  "median_width_with_modelform": 1986.2381318598318,
+  "median_width_total": 1998.8880910431299,
+  "median_total_lower": 4709.734987036455,
+  "median_total_upper": 6708.623078079585,
+  "budget": {
+    "aleatory_V_wind": 989.9569819758863,
+    "epistemic_eps_atm": 482.75225229195894,
+    "model_form": 513.5288975919862,
+    "numerical": 12.649959183297685,
+    "total": 1998.888091043129,
+    "shares": {
+      "aleatory": 0.4952538295724563,
+      "epistemic": 0.24151039493163043,
+      "model": 0.25690727754748827,
+      "numerical": 0.00632849794842504
+    }
+  }
+}
